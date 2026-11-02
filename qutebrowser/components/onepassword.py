@@ -22,6 +22,8 @@ userscript or temporary file is involved.
 
 import functools
 import json
+import os
+import shutil
 import urllib.parse
 from typing import Any
 
@@ -30,8 +32,22 @@ from qutebrowser.misc import guiprocess
 from qutebrowser.qt.core import QTimer
 from qutebrowser.utils import usertypes, utils
 
-OP = 'op'
+OP_FALLBACK = 'op'
+# NixOS installs the CLI as a setgid wrapper: the 1Password app integration
+# socket is only accessible to the onepassword-cli group, and a plain `op`
+# from the user profile can shadow the wrapper in GUI session PATHs.
+NIXOS_WRAPPER = '/run/wrappers/bin/op'
 PROMPT = '1Password'
+
+
+def op_binary() -> str:
+    """Resolve the 1Password CLI binary."""
+    override = os.environ.get('QUTE_ONEPASS_OP')
+    if override:
+        return override
+    if os.path.exists(NIXOS_WRAPPER):
+        return NIXOS_WRAPPER
+    return shutil.which(OP_FALLBACK) or OP_FALLBACK
 
 # Kept in sync with the password_fill userscript: React/Vue controlled inputs
 # need the native value setter and input/change events to register the change.
@@ -166,7 +182,7 @@ class _OpProcess:
         self._timer.timeout.connect(self._on_timeout)
         _ACTIVE.add(self)
         self._timer.start(timeout_ms)
-        self._proc.start(OP, args)
+        self._proc.start(op_binary(), args)
 
     def _cleanup(self) -> None:
         _ACTIVE.discard(self)

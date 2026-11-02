@@ -102,3 +102,8 @@ def test_fill_js_has_no_placeholders():
 ])
 def test_accounts_configured(stdout, expected):
     assert onepassword.accounts_configured(stdout) is expected
+
+
+def test_op_binary_env_override(monkeypatch):
+    monkeypatch.setenv('QUTE_ONEPASS_OP', '/tmp/custom-op')
+    assert onepassword.op_binary() == '/tmp/custom-op'
