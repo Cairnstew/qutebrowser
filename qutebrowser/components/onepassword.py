@@ -35,7 +35,7 @@ from qutebrowser.utils import usertypes, utils
 OP_FALLBACK = 'op'
 # NixOS installs the CLI as a setgid wrapper: the 1Password app integration
 # socket is only accessible to the onepassword-cli group, and a plain `op`
-# from the user profile can shadow the wrapper in GUI session PATHs.
+# (e.g. the copy some home profiles install) does not have that access.
 NIXOS_WRAPPER = '/run/wrappers/bin/op'
 PROMPT = '1Password'
 
