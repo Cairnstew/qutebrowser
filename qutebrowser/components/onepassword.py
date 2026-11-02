@@ -27,6 +27,7 @@ from typing import Any
 
 from qutebrowser.api import apitypes, cmdutils, message
 from qutebrowser.misc import guiprocess
+from qutebrowser.qt.core import QTimer
 from qutebrowser.utils import usertypes, utils
 
 OP = 'op'
@@ -123,36 +124,108 @@ def fill_js(username: str, password: str) -> str:
 # finishes. Keep them alive until the process exits.
 _ACTIVE: set['_OpProcess'] = set()
 
+# The CLI is known to have a signed-in account (checked once per session).
+_accounts_ok = False
+
+SETUP_HINT = (
+    'Enable "Integrate with 1Password CLI" in the 1Password app '
+    '(Settings → Developer) plus Linux system authentication '
+    '(Settings → Security), or run \'op account add\' once in a terminal.')
+
+
+def _no_account() -> None:
+    message.error('{}: the 1Password CLI has no account configured.'.format(
+        PROMPT), replace='onepassword')
+    message.info(SETUP_HINT, replace='onepassword-hint')
+
 
 class _OpProcess:
 
     """Run the 1Password CLI asynchronously.
 
+    A watchdog kills the process if it waits for terminal input (which `op`
+    does when no account is configured or a manual sign-in is required); this
+    command has no way to answer such a prompt.
+
     Attributes:
         _handler: Called with the process' stdout on success.
         _proc: The underlying GUIProcess.
+        _timer: Watchdog timer.
+        _done: Whether the process already finished/timed out.
     """
 
-    def __init__(self, args: list[str], handler: Any) -> None:
+    def __init__(self, args: list[str], handler: Any, *,
+                 timeout_ms: int = 20000) -> None:
         self._handler = handler
+        self._done = False
         self._proc = guiprocess.GUIProcess(what='1password')
         self._proc.finished.connect(self._on_finished)
         self._proc.error.connect(self._on_error)
+        self._timer = QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._on_timeout)
         _ACTIVE.add(self)
+        self._timer.start(timeout_ms)
         self._proc.start(OP, args)
 
-    def _on_finished(self, exitcode: int, _status: Any) -> None:
+    def _cleanup(self) -> None:
         _ACTIVE.discard(self)
+        self._done = True
+        self._timer.stop()
+
+    def _on_timeout(self) -> None:
+        if self._done:
+            return
+        self._cleanup()
+        self._proc.terminate(kill=True)
+        message.error('{}: op is waiting for terminal input.'.format(PROMPT),
+                      replace='onepassword')
+        message.info(SETUP_HINT, replace='onepassword-hint')
+
+    def _on_finished(self, exitcode: int, _status: Any) -> None:
+        if self._done:
+            return
+        self._cleanup()
+        stderr = self._proc.stderr.strip()
         if exitcode != 0:
-            stderr = self._proc.stderr.strip()
-            message.error('{}: {}'.format(
-                PROMPT, stderr or 'op exited with status {}'.format(exitcode)))
+            if 'No accounts configured' in stderr:
+                _no_account()
+            else:
+                message.error('{}: {}'.format(
+                    PROMPT,
+                    stderr or 'op exited with status {}'.format(exitcode)))
             return
         self._handler(self._proc.stdout)
 
     def _on_error(self, _error: Any) -> None:
-        _ACTIVE.discard(self)
+        if self._done:
+            return
+        self._cleanup()
         message.error('{}: could not run the op CLI'.format(PROMPT))
+
+
+def accounts_configured(stdout: str) -> bool:
+    """Check `op account list --format json` output for a configured account."""
+    try:
+        accounts = json.loads(stdout or '[]')
+    except ValueError:
+        return False
+    return isinstance(accounts, list) and bool(accounts)
+
+
+def _handle_accounts(tab: apitypes.Tab, query: str, stdout: str) -> None:
+    global _accounts_ok
+    if not accounts_configured(stdout):
+        _no_account()
+        return
+    _accounts_ok = True
+    _list_items(tab, query)
+
+
+def _list_items(tab: apitypes.Tab, query: str) -> None:
+    _OpProcess(['item', 'list', '--categories', 'Login', '--format', 'json'],
+               functools.partial(_handle_list, tab, query))
+
 
 
 def _load_list(stdout: str) -> list[dict[str, Any]] | None:
@@ -262,5 +335,11 @@ def onepass(tab: apitypes.Tab, query: str = '') -> None:
     Args:
         query: Only consider items whose title or saved URL contains this text.
     """
-    _OpProcess(['item', 'list', '--categories', 'Login', '--format', 'json'],
-               functools.partial(_handle_list, tab, query))
+    if _accounts_ok:
+        _list_items(tab, query)
+        return
+    # Check for a usable account first: `op item list` prompts for an account
+    # on the terminal when none is configured, which this command can't answer.
+    _OpProcess(['account', 'list', '--format', 'json'],
+               functools.partial(_handle_accounts, tab, query),
+               timeout_ms=10000)

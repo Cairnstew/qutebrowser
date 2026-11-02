@@ -91,3 +91,14 @@ def test_fill_js_has_no_placeholders():
     assert '__PASSWORD__' not in js
     assert 'input' in js
     assert 'password' in js
+
+
+@pytest.mark.parametrize('stdout, expected', [
+    ('[]', False),
+    ('', False),
+    ('{}', False),
+    ('not json', False),
+    ('[{"account_id": "ABC123"}]', True),
+])
+def test_accounts_configured(stdout, expected):
+    assert onepassword.accounts_configured(stdout) is expected
